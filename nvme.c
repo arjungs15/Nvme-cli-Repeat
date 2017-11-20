@@ -168,6 +168,53 @@ int validate_output_format(char *format)
 	return -EINVAL;
 }
 
+int repeat_cmd(int fd, void *data, int nsid, bool present, int flag, int rc)
+{
+        int err, i=0;
+        for(i=0; i<rc; i++){
+        // function call of the command that is to be repeated
+        switch(flag){
+                case 1 : err = nvme_identify(fd, 0, 1, data);
+                if (!err) {
+			if (fmt == BINARY)
+				d_raw((unsigned char *)&ctrl, sizeof(ctrl));
+			else if (fmt == JSON)
+				json_nvme_id_ctrl(&ctrl, flags, vs);
+			else {
+				printf("NVME Identify Controller:\n");
+				__show_nvme_id_ctrl(&ctrl, flags, vs);
+				}
+			}
+		else if (err > 0)
+			fprintf(stderr, "NVMe Status:%s(%x)\n",
+				nvme_status_to_string(err), err);
+		else
+			perror("identify controller");
+                        break;
+                case 2:  err = nvme_identify_ns(fd,nsid, present, data);
+                        if (!err) {
+				if (fmt == BINARY)
+					d_raw((unsigned char *)&ns, sizeof(ns));
+				else if (fmt == JSON)
+					json_nvme_id_ns(&ns, flags);
+			else {
+				printf("NVME Identify Namespace %d:\n", cfg.namespace_id);
+				show_nvme_id_ns(&ns, flags);
+				}
+			}
+			else if (err > 0)
+				fprintf(stderr, "NVMe Status:%s(%x) NSID:%d\n",
+				nvme_status_to_string(err), err, cfg.namespace_id);
+			else
+				perror("identify namespace");
+                        break;
+
+                defaulf : ; // do nothing
+                }
+        }
+        return err;
+}
+
 static int get_smart_log(int argc, char **argv, struct command *cmd, struct plugin *plugin)
 {
 	struct nvme_smart_log smart_log;
@@ -998,7 +1045,8 @@ int __id_ctrl(int argc, char **argv, struct command *cmd, struct plugin *plugin,
 	const char *vendor_specific = "dump binary vendor infos";
 	const char *raw_binary = "show infos in binary format";
 	const char *human_readable = "show infos in readable format";
-	int err, fmt, fd;
+	const char *repeat ="repeat the command";
+	int err, fmt, fd, r;
 	unsigned int flags = 0;
 	struct nvme_id_ctrl ctrl;
 
@@ -1006,11 +1054,13 @@ int __id_ctrl(int argc, char **argv, struct command *cmd, struct plugin *plugin,
 		int vendor_specific;
 		int raw_binary;
 		int human_readable;
+		int repeat;
 		char *output_format;
 	};
 
 	struct config cfg = {
 		.output_format = "normal",
+		.repeat = 1,
 	};
 
 	const struct argconfig_commandline_options command_line_options[] = {
@@ -1018,6 +1068,7 @@ int __id_ctrl(int argc, char **argv, struct command *cmd, struct plugin *plugin,
 		{"raw-binary",      'b', "",    CFG_NONE,   &cfg.raw_binary,      no_argument,       raw_binary},
 		{"human-readable",  'H', "",    CFG_NONE,   &cfg.human_readable,  no_argument,       human_readable},
 		{"output-format",   'o', "FMT", CFG_STRING, &cfg.output_format,   required_argument, output_format },
+		{"repeat", 'r', "R", CFG_BYTE, &cfg.repeat, required_argument, repeat },
 		{NULL}
 	};
 
@@ -1037,24 +1088,13 @@ int __id_ctrl(int argc, char **argv, struct command *cmd, struct plugin *plugin,
 		flags |= VS;
 	if (cfg.human_readable)
 		flags |= HUMAN;
-
-	err = nvme_identify_ctrl(fd, &ctrl);
-	if (!err) {
-		if (fmt == BINARY)
-			d_raw((unsigned char *)&ctrl, sizeof(ctrl));
-		else if (fmt == JSON)
-			json_nvme_id_ctrl(&ctrl, flags, vs);
-		else {
-			printf("NVME Identify Controller:\n");
-			__show_nvme_id_ctrl(&ctrl, flags, vs);
-		}
+	
+	if(cfg.repeat)
+	{
+		err = repeat_cmd(fd,&ctrl,0,0,1,cfg.repeat);
 	}
-	else if (err > 0)
-		fprintf(stderr, "NVMe Status:%s(%x)\n",
-				nvme_status_to_string(err), err);
-	else
-		perror("identify controller");
-
+	//err = nvme_identify_ctrl(fd, &ctrl);
+	
 	return err;
 }
 
@@ -1147,12 +1187,14 @@ static int id_ns(int argc, char **argv, struct command *cmd, struct plugin *plug
 		int   raw_binary;
 		int   human_readable;
 		int   force;
+		int   repeat;
 		char *output_format;
 	};
 
 	struct config cfg = {
 		.namespace_id    = 0,
 		.output_format = "normal",
+		.repeat = 1;
 	};
 
 	const struct argconfig_commandline_options command_line_options[] = {
@@ -1162,6 +1204,7 @@ static int id_ns(int argc, char **argv, struct command *cmd, struct plugin *plug
 		{"raw-binary",      'b', "",    CFG_NONE,     &cfg.raw_binary,      no_argument,       raw_binary},
 		{"human-readable",  'H', "",    CFG_NONE,     &cfg.human_readable,  no_argument,       human_readable},
 		{"output-format",   'o', "FMT", CFG_STRING,   &cfg.output_format,   required_argument, output_format },
+		{"repeat", 'r', "R", CFG_BYTE, &cfg.repeat, required_argument, repeat },
 		{NULL}
 	};
 
@@ -1184,22 +1227,12 @@ static int id_ns(int argc, char **argv, struct command *cmd, struct plugin *plug
 		fprintf(stderr,
 			"Error: requesting namespace-id from non-block device\n");
 
-	err = nvme_identify_ns(fd, cfg.namespace_id, cfg.force, &ns);
-	if (!err) {
-		if (fmt == BINARY)
-			d_raw((unsigned char *)&ns, sizeof(ns));
-		else if (fmt == JSON)
-			json_nvme_id_ns(&ns, flags);
-		else {
-			printf("NVME Identify Namespace %d:\n", cfg.namespace_id);
-			show_nvme_id_ns(&ns, flags);
-		}
+	if(cfg.repeat)
+	{
+		err = repeat_cmd(fd,&ns,cfg.namespace_id,cfg.force,2,cfg.repeat);
 	}
-	else if (err > 0)
-		fprintf(stderr, "NVMe Status:%s(%x) NSID:%d\n",
-			nvme_status_to_string(err), err, cfg.namespace_id);
-	else
-		perror("identify namespace");
+	//err = nvme_identify_ns(fd, cfg.namespace_id, cfg.force, &ns);
+	
 	return err;
 }
 
